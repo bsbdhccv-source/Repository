@@ -79,18 +79,39 @@ app.post('/webhook', async (req, res) => {
       }
 
       const db = admin.database();
+      let actualUserId = userId;
       
-      let userRef = db.ref(`users/${userId}`);
-      let snapshot = await userRef.once('value');
+      // تنظيف الاسم من الرمز @ إن وجد للبحث في جدول usernames
+      const cleanUsername = userId.startsWith('@') ? userId.replace('@', '') : userId;
 
-      if (!snapshot.exists() && userId.startsWith('@')) {
-        const cleanUserId = userId.replace('@', '');
-        const altRef = db.ref(`users/${cleanUserId}`);
-        const altSnap = await altRef.once('value');
-        if (altSnap.exists()) {
-          userRef = altRef;
+      // البحث في جدول usernames لمعرفة الـ UID الحقيقي
+      const usernameRef = db.ref(`usernames/${cleanUsername}`);
+      const usernameSnap = await usernameRef.once('value');
+
+      if (usernameSnap.exists()) {
+        const val = usernameSnap.val();
+        if (typeof val === 'string') {
+          actualUserId = val;
+        } else if (val && typeof val === 'object') {
+          actualUserId = val.uid || val.userId || val.id || actualUserId;
+        }
+      } else {
+        // تجربة البحث مع الرمز @ مباشرة في حال كان مخزناً هكذا
+        const usernameRefAt = db.ref(`usernames/${userId}`);
+        const usernameSnapAt = await usernameRefAt.once('value');
+        if (usernameSnapAt.exists()) {
+          const val = usernameSnapAt.val();
+          if (typeof val === 'string') {
+            actualUserId = val;
+          } else if (val && typeof val === 'object') {
+            actualUserId = val.uid || val.userId || val.id || actualUserId;
+          }
         }
       }
+
+      console.log('المعرف الفعلي (Target UID):', actualUserId);
+
+      const userRef = db.ref(`users/${actualUserId}`);
 
       await userRef.transaction((currentData) => {
         if (currentData === null) {
@@ -109,7 +130,7 @@ app.post('/webhook', async (req, res) => {
         orderId: event.data.id || 'N/A'
       });
 
-      console.log(`تم بنجاح إضافة ${pointsToAdd} نقطة وإرسال الإشعار للمستخدم: ${userId}`);
+      console.log(`تم بنجاح إضافة ${pointsToAdd} نقطة وإرسال الإشعار للمستخدم تحت الـ UID: ${actualUserId}`);
     }
 
     res.status(200).send({ success: true });
