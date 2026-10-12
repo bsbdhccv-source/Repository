@@ -62,7 +62,7 @@ app.post('/webhook', async (req, res) => {
       let actualUserId = null;
       const cleanUsername = userId.startsWith('@') ? userId.replace('@', '') : userId;
 
-      // 1. البحث عن الـ UID الفعلي في الجداول المعتادة
+      // البحث عن الـ UID الفعلي للعبة
       const possiblePaths = [
         `usernames/${cleanUsername}`,
         `usernames/u_${cleanUsername}`,
@@ -89,53 +89,51 @@ app.post('/webhook', async (req, res) => {
         actualUserId = userId;
       }
 
-      console.log('المعرف الفعلي المستهدف (Target UID):', actualUserId);
+      console.log('المعرف الفعلي للعبة (Target UID):', actualUserId);
+      console.log('اسم المستخدم النصي للتطبيق (Username):', cleanUsername);
 
-      // دالة لتحديث النقاط والعملات والرصيد بكافة المسميات
+      // دالة لتحديث كافة حقول النقاط والرصيد المحتملة
       const updatePointsTransaction = (currentData) => {
         if (currentData === null) {
           return { 
             points: pointsToAdd, 
             coins: pointsToAdd, 
             score: pointsToAdd,
-            balance: pointsToAdd 
+            balance: pointsToAdd,
+            point: pointsToAdd
           };
         } else {
           currentData.points = (currentData.points || 0) + pointsToAdd;
           currentData.coins = (currentData.coins || 0) + pointsToAdd;
           currentData.score = (currentData.score || 0) + pointsToAdd;
           currentData.balance = (currentData.balance || 0) + pointsToAdd;
+          currentData.point = (currentData.point || 0) + pointsToAdd;
           return currentData;
         }
       };
 
-      // 2. تجميع المسارات المستهدفة الأساسية (اللعبة وتطبيق TEFLSY بالصيغ المختلفة)
+      // قائمة مسارات شاملة تجمع بين (الـ UID للعبة) و (الاسم النصي الصريح للتطبيق)
       const targetPaths = [
+        // مسارات اللعبة (بالـ UID)
         `users/${actualUserId}`,
         `userProgress/${actualUserId}`,
+        `accounts/${actualUserId}`,
+        
+        // مسارات تطبيق اللغات (بالاسم النصي الصريح لضمان الوصول للبروفايل مباشرة)
+        `users/${cleanUsername}`,
+        `users/@${cleanUsername}`,
+        `users/u_${cleanUsername}`,
         `userProgress/${cleanUsername}`,
-        `userProgress/u_${cleanUsername}`,
         `userProgress/@${cleanUsername}`,
-        `langApp/users/${actualUserId}`,
-        `langApp/userProgress/${actualUserId}`,
+        `userProgress/u_${cleanUsername}`,
+        `accounts/${cleanUsername}`,
+        `accounts/@${cleanUsername}`,
+        `accounts/u_${cleanUsername}`,
         `langApp/users/${cleanUsername}`,
-        `langApp/userProgress/${cleanUsername}`
+        `langApp/users/${actualUserId}`,
+        `langApp/userProgress/${cleanUsername}`,
+        `langApp/userProgress/${actualUserId}`
       ];
-
-      // 3. مسح ديناميكي شامل داخل مجلد userProgress للعثور على أي مفتاح يحتوي على اسم المستخدم أو يطابقه
-      const userProgressSnap = await db.ref('userProgress').once('value');
-      if (userProgressSnap.exists()) {
-        userProgressSnap.forEach((childSnap) => {
-          const key = childSnap.key;
-          const val = childSnap.val();
-          if (
-            key.toLowerCase().includes(cleanUsername.toLowerCase()) || 
-            (val && (val.username === cleanUsername || val.name === cleanUsername || val.userName === cleanUsername))
-          ) {
-            targetPaths.push(`userProgress/${key}`);
-          }
-        });
-      }
 
       const notifData = {
         title: 'تم شحن النقاط بنجاح 🎉',
@@ -144,17 +142,22 @@ app.post('/webhook', async (req, res) => {
         orderId: event.data.id || 'N/A'
       };
 
-      // إزالة التكرارات من المسارات لضمان عدم تنفيذ العمليات مرتين لنفس المسار
+      // إزالة أي مسارات مكررة
       const uniquePaths = [...new Set(targetPaths)];
 
-      // تنفيذ الشحن وإرسال الإشعارات على كافة المسارات المكتشفة دفعة واحدة
+      // تنفيذ التحديث وإرسال الإشعارات على كافة المسارات دفعة واحدة
       for (const p of uniquePaths) {
-        const ref = db.ref(p);
-        await ref.transaction(updatePointsTransaction);
-        await ref.child('notifications').push().set(notifData);
+        try {
+          const ref = db.ref(p);
+          await ref.transaction(updatePointsTransaction);
+          await ref.child('notifications').push().set(notifData);
+          console.log(`تم التحديث بنجاح في المسار: ${p}`);
+        } catch (err) {
+          console.log(`تخطي المسار ${p} لعدم وجوده أو خطأ صلاحيات`);
+        }
       }
 
-      console.log(`تم بنجاح شحن ${pointsToAdd} نقطة وتحديث كافة مسارات التطبيق واللعبة للمستخدم: ${actualUserId}`);
+      console.log(`تم الانتهاء من عملية الشحن الشاملة للمستخدم: ${actualUserId} / ${cleanUsername}`);
     }
 
     res.status(200).send({ success: true });
