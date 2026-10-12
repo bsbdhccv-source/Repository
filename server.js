@@ -107,30 +107,39 @@ app.post('/webhook', async (req, res) => {
 
       console.log('المعرف الفعلي المستهدف (Target UID):', actualUserId);
 
-      // دالة لتحديث النقاط والعملات
+      // دالة لتحديث النقاط والعملات بكافة الأسماء المحتملة
       const updatePointsTransaction = (currentData) => {
         if (currentData === null) {
-          return { points: pointsToAdd, coins: pointsToAdd, score: pointsToAdd };
+          return { 
+            points: pointsToAdd, 
+            coins: pointsToAdd, 
+            score: pointsToAdd, 
+            langAppPoints: pointsToAdd,
+            langAppCoins: pointsToAdd 
+          };
         } else {
           currentData.points = (currentData.points || 0) + pointsToAdd;
           currentData.coins = (currentData.coins || 0) + pointsToAdd;
           currentData.score = (currentData.score || 0) + pointsToAdd;
+          currentData.langAppPoints = (currentData.langAppPoints || 0) + pointsToAdd;
+          currentData.langAppCoins = (currentData.langAppCoins || 0) + pointsToAdd;
           return currentData;
         }
       };
 
-      // قائمة شاملة لكافة المسارات المحتملة للعبة ولتطبيق langApp (سواء بالـ UID أو بالأسماء النصية مباشرة)
+      // قائمة شاملة لكل المسارات المحتملة للعبة ولتطبيق اللغات (جذرية وفرعية وبأسماء المستخدمين المباشرة)
       const targetPaths = [
         `users/${actualUserId}`,
         `userProgress/${actualUserId}`,
+        `langAppUsers/${actualUserId}`,
+        `langAppUsers/${cleanUsername}`,
+        `langAppUserProgress/${actualUserId}`,
+        `langAppUserProgress/${cleanUsername}`,
         `langApp/users/${actualUserId}`,
-        `langApp/userProgress/${actualUserId}`,
         `langApp/users/${cleanUsername}`,
         `langApp/users/@${cleanUsername}`,
-        `langApp/users/${userId}`,
-        `langApp/userProgress/${cleanUsername}`,
-        `langApp/userProgress/@${cleanUsername}`,
-        `langApp/userProgress/${userId}`
+        `langApp/userProgress/${actualUserId}`,
+        `langApp/userProgress/${cleanUsername}`
       ];
 
       const notifData = {
@@ -140,7 +149,7 @@ app.post('/webhook', async (req, res) => {
         orderId: event.data.id || 'N/A'
       };
 
-      // تنفيذ التحديث وإرسال الإشعارات على جميع المسارات دفعة واحدة لضمان وصولها للتطبيق وللعبة
+      // تنفيذ التحديث على كافة المسارات دفعة واحدة
       for (const p of targetPaths) {
         const ref = db.ref(p);
         await ref.transaction(updatePointsTransaction);
