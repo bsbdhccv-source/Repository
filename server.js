@@ -6,20 +6,16 @@ const fs = require('fs');
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-// تهيئة Firebase Admin SDK مع دعم المسار السري في Render أو الملف المحلي
 let serviceAccount;
 try {
   if (fs.existsSync('/etc/secrets/serviceAccount.json')) {
     serviceAccount = require('/etc/secrets/serviceAccount.json');
-    console.log('تم تحميل ملف الاعتماد من مسار Secret Files في Render بنجاح.');
+    console.log('تم تحميل ملف الاعتماد من مسار Secret Files بنجاح.');
   } else if (fs.existsSync('./serviceAccount.json')) {
     serviceAccount = require('./serviceAccount.json');
-    console.log('تم تحميل ملف الاعتماد من المجلد المحلي بنجاح.');
-  } else {
-    console.error('تحذير: لم يتم العثور على ملف serviceAccount.json!');
   }
 } catch (error) {
-  console.error('خطأ أثناء تحميل ملف الاعتماد:', error);
+  console.error('خطأ في تحميل الاعتماد:', error);
 }
 
 if (serviceAccount) {
@@ -30,23 +26,17 @@ if (serviceAccount) {
   console.log('تم تهيئة اتصال Firebase بنجاح تام 🚀');
 }
 
-app.use(bodyParser.json({
-  verify: (req, res, buf) => {
-    req.rawBody = buf;
-  }
-}));
+app.use(bodyParser.json({ verify: (req, res, buf) => { req.rawBody = buf; } }));
 
 app.get('/', (req, res) => {
-  console.log("تمت زيارة الصفحة الرئيسية للسيرفر");
-  res.send('Teflsy Stripe & Lemon Squeezy Webhook Server is live! 🚀');
+  res.send('Server is live! 🚀');
 });
 
 app.post('/webhook', async (req, res) => {
   try {
-    console.log('--- تم استلام Webhook جديد من Lemon Squeezy ---');
+    console.log('--- استلام Webhook جديد من Lemon Squeezy ---');
     const event = req.body;
     const eventName = event && event.meta ? event.meta.event_name : null;
-    console.log('حدث:', eventName);
 
     if (eventName === 'order_created') {
       const attributes = event.data && event.data.attributes ? event.data.attributes : {};
@@ -55,21 +45,13 @@ app.post('/webhook', async (req, res) => {
                           ? attributes.checkout_data.custom 
                           : (attributes.custom_data || meta.custom_data || {});
 
-      // استخراج معرف المستخدم من الرابط
       let userId = customData.user_id || meta.user_id || attributes.passthrough || null;
-
       if (userId) {
-        try {
-          userId = decodeURIComponent(userId);
-        } catch (e) {}
+        try { userId = decodeURIComponent(userId); } catch (e) {}
       }
 
-      console.log('المعرف المستخرج (User ID):', userId);
-
-      if (!userId) {
-        console.log('تحذير: user_id غير موجود في بيانات الطلب');
-        return res.status(200).send({ warning: 'user_id missing' });
-      }
+      console.log('المعرف المستخرج من الرابط:', userId);
+      if (!userId) return res.status(200).send({ warning: 'user_id missing' });
 
       let pointsToAdd = 90;
       if (customData.points) {
@@ -77,11 +59,10 @@ app.post('/webhook', async (req, res) => {
       }
 
       const db = admin.database();
-      let actualUserId = userId;
-      
+      let actualUserId = null;
       const cleanUsername = userId.startsWith('@') ? userId.replace('@', '') : userId;
 
-      // البحث في جميع المسارات المحتملة في قاعدة البيانات (بما فيها البادئة u_ وجداول userProgress)
+      // 1. البحث في المسارات المباشرة المحتملة
       const possiblePaths = [
         `usernames/${cleanUsername}`,
         `usernames/u_${cleanUsername}`,
@@ -104,10 +85,48 @@ app.post('/webhook', async (req, res) => {
         }
       }
 
+      // 2. البحث الذكي الشامل داخل مجلد users في حال لم يتم العثور عليه
+      if (!actualUserId) {
+        const usersSnap = await db.ref('users').once('value');
+        if (usersSnap.exists()) {
+          usersSnap.forEach((childSnap) => {
+            const userData = childSnap.val();
+            const key = childSnap.key;
+            if (userData && typeof userData === 'object') {
+              const uName = userData.username || userData.name || userData.userName || userData.displayName || '';
+              if (uName.toLowerCase() === cleanUsername.toLowerCase() || uName.toLowerCase() === userId.toLowerCase()) {
+                actualUserId = key;
+              }
+            }
+          });
+        }
+      }
+
+      // 3. البحث الشامل داخل userProgress إذا لم يتم العثور عليه بعد
+      if (!actualUserId) {
+        const progressSnap = await db.ref('userProgress').once('value');
+        if (progressSnap.exists()) {
+          progressSnap.forEach((childSnap) => {
+            const progData = childSnap.val();
+            const key = childSnap.key;
+            if (progData && typeof progData === 'object') {
+              const pName = progData.username || progData.name || progData.userName || '';
+              if (pName.toLowerCase() === cleanUsername.toLowerCase() || key.toLowerCase().includes(cleanUsername.toLowerCase())) {
+                actualUserId = progData.uid || progData.userId || key;
+              }
+            }
+          });
+        }
+      }
+
+      // إذا لم يُعثر على مطابقة مطلقة، نستخدم المعرف المُمرر كملجأ أخير
+      if (!actualUserId) {
+        actualUserId = userId;
+      }
+
       console.log('المعرف الفعلي المستهدف (Target UID):', actualUserId);
 
       const userRef = db.ref(`users/${actualUserId}`);
-
       await userRef.transaction((currentData) => {
         if (currentData === null) {
           currentData = { points: pointsToAdd };
@@ -125,16 +144,14 @@ app.post('/webhook', async (req, res) => {
         orderId: event.data.id || 'N/A'
       });
 
-      console.log(`تم بنجاح إضافة ${pointsToAdd} نقطة وإرسال الإشعار للمستخدم تحت الـ UID: ${actualUserId}`);
+      console.log(`تم بنجاح إضافة ${pointsToAdd} نقطة وإرسال الإشعار للمستخدم تحت الـ UID الصحيح: ${actualUserId}`);
     }
 
     res.status(200).send({ success: true });
   } catch (error) {
-    console.error('خطأ أثناء معالجة الـ Webhook:', error);
+    console.error('خطأ أثناء المعالجة:', error);
     res.status(500).send({ error: error.message });
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`Server is running on port ${PORT}`);
-});
+app.listen(PORT, () => { console.log(`Server is running on port ${PORT}`); });
