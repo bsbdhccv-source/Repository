@@ -62,7 +62,7 @@ app.post('/webhook', async (req, res) => {
       let actualUserId = null;
       const cleanUsername = userId.startsWith('@') ? userId.replace('@', '') : userId;
 
-      // 1. البحث التقليدي عن الـ UID
+      // 1. البحث عن الـ UID الفعلي في الجداول
       const possiblePaths = [
         `usernames/${cleanUsername}`,
         `usernames/u_${cleanUsername}`,
@@ -89,9 +89,9 @@ app.post('/webhook', async (req, res) => {
         actualUserId = userId;
       }
 
-      console.log('المعرف المستهدف للعبة (UID):', actualUserId);
+      console.log('المعرف المستهدف (Target ID):', actualUserId);
 
-      // دالة لتحديث النقاط والعملات والرصيد
+      // دالة لتحديث النقاط والعملات والرصيد لمرة واحدة
       const updatePointsTransaction = (currentData) => {
         if (currentData === null) {
           return { 
@@ -109,23 +109,16 @@ app.post('/webhook', async (req, res) => {
         }
       };
 
-      // 2. المسارات الأساسية المعروفة للشحن المباشر
+      // 2. جمع المسارات الفريدة بدقة لتجنب التكرار (منع الشحن مرتين)
       const targetPaths = new Set([
         `users/${actualUserId}`,
         `userProgress/${actualUserId}`,
         `accounts/${actualUserId}`,
         `users/${cleanUsername}`,
-        `users/@${cleanUsername}`,
-        `users/u_${cleanUsername}`,
-        `userProgress/${cleanUsername}`,
-        `userProgress/@${cleanUsername}`,
-        `userProgress/u_${cleanUsername}`,
-        `accounts/${cleanUsername}`,
-        `accounts/@${cleanUsername}`,
-        `accounts/u_${cleanUsername}`
+        `userProgress/${cleanUsername}`
       ]);
 
-      // 3. ماسح ذكي شامل لكل جذور قاعدة البيانات للعثور تلقائياً على بروفايل "فاطمة" أو رصيد "10"
+      // 3. الماسح الذكي المكتشف للمسارات الفعلية
       try {
         const rootSnap = await db.ref('/').once('value');
         const rootVal = rootSnap.val();
@@ -136,28 +129,23 @@ app.post('/webhook', async (req, res) => {
             if (rootChild && typeof rootChild === 'object') {
               for (const subKey of Object.keys(rootChild)) {
                 const subVal = rootChild[subKey];
-                // إذا وجدنا اسماً مطابقاً أو رصيداً يطابق 10 نقاط الموجودة في التطبيق
                 if (
                   subKey.toLowerCase().includes(cleanUsername.toLowerCase()) || 
                   subKey.toLowerCase().includes('fatima') ||
                   (subVal && typeof subVal === 'object' && (
                     subVal.username === cleanUsername || 
                     subVal.name === cleanUsername || 
-                    subVal.userName === cleanUsername || 
-                    subVal.points === 10 ||
-                    subVal.coins === 10
+                    subVal.userName === cleanUsername
                   ))
                 ) {
-                  const detectedPath = `${rootKey}/${subKey}`;
-                  targetPaths.add(detectedPath);
-                  console.log(`🎯 [الماسح الذكي] تم اكتشاف مسار التطبيق بدقة: ${detectedPath}`);
+                  targetPaths.add(`${rootKey}/${subKey}`);
                 }
               }
             }
           }
         }
       } catch (scanErr) {
-        console.log('خطأ أثناء المسح الذكي:', scanErr.message);
+        console.log('خطأ في الماسح الذكي:', scanErr.message);
       }
 
       const notifData = {
@@ -167,24 +155,33 @@ app.post('/webhook', async (req, res) => {
         orderId: event.data.id || 'N/A'
       };
 
-      // 4. تنفيذ التحديث على جميع المسارات المكتشفة والأساسية دفعة واحدة
+      let notificationSent = false;
+
+      // 4. تنفيذ التحديث (مرة واحدة لكل مسار فريد) وإرسال الإشعار بدقة
       for (const p of targetPaths) {
         try {
           const ref = db.ref(p);
+          // شحن النقاط
           await ref.transaction(updatePointsTransaction);
-          await ref.child('notifications').push().set(notifData);
-          console.log(`✅ تمت عملية الشحن بنجاح في المسار: ${p}`);
+          console.log(`✅ تم شحن النقاط بنجاح في المسار: ${p}`);
+
+          // إرسال الإشعار مرة واحدة فقط لأول مسار نشط يتم شحنه بنجاح لضمان ظهوره في قسم الإشعارات
+          if (!notificationSent) {
+            await ref.child('notifications').push().set(notifData);
+            console.log(`🔔 تم إرسال الإشعار بنجاح في المسار: ${p}/notifications`);
+            notificationSent = true;
+          }
         } catch (err) {
           console.log(`⚠️ تخطي المسار ${p}: ${err.message}`);
         }
       }
 
-      console.log('--- انتهت عملية معالجة الـ Webhook والشحن الشامل بنجاح ---');
+      console.log('--- تمت معالجة الطلب بنجاح تام وبدون تكرار ---');
     }
 
     res.status(200).send({ success: true });
   } catch (error) {
-    console.error('خطأ رئيسي أثناء معالجة الـ Webhook:', error);
+    console.error('خطأ رئيسي:', error);
     res.status(500).send({ error: error.message });
   }
 });
