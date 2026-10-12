@@ -55,22 +55,20 @@ app.post('/webhook', async (req, res) => {
                           ? attributes.checkout_data.custom 
                           : (attributes.custom_data || meta.custom_data || {});
 
-      // البحث عن المعرف في كافة المسارات المحتملة
+      // استخراج معرف المستخدم من الرابط
       let userId = customData.user_id || meta.user_id || attributes.passthrough || null;
 
       if (userId) {
         try {
           userId = decodeURIComponent(userId);
-        } catch (e) {
-          // في حال عدم الحاجة للفك
-        }
+        } catch (e) {}
       }
 
       console.log('المعرف المستخرج (User ID):', userId);
 
       if (!userId) {
         console.log('تحذير: user_id غير موجود في بيانات الطلب');
-        return res.status(200).send({ warning: 'user_id missing but webhook received' });
+        return res.status(200).send({ warning: 'user_id missing' });
       }
 
       let pointsToAdd = 90;
@@ -83,38 +81,30 @@ app.post('/webhook', async (req, res) => {
       
       const cleanUsername = userId.startsWith('@') ? userId.replace('@', '') : userId;
 
-      // طباعة محتويات جدول usernames بالكامل للتشخيص في السجلات
-      try {
-        const usernamesSnap = await db.ref('usernames').once('value');
-        console.log('محتويات جدول usernames في قاعدة البيانات:', usernamesSnap.val());
-      } catch (err) {
-        console.log('خطأ أثناء قراءة جدول usernames:', err.message);
-      }
+      // البحث في جميع المسارات المحتملة في قاعدة البيانات (بما فيها البادئة u_ وجداول userProgress)
+      const possiblePaths = [
+        `usernames/${cleanUsername}`,
+        `usernames/u_${cleanUsername}`,
+        `userProgress/${cleanUsername}`,
+        `userProgress/u_${cleanUsername}`,
+        `users/${cleanUsername}`
+      ];
 
-      const usernameRef = db.ref(`usernames/${cleanUsername}`);
-      const usernameSnap = await usernameRef.once('value');
-
-      if (usernameSnap.exists()) {
-        const val = usernameSnap.val();
-        if (typeof val === 'string') {
-          actualUserId = val;
-        } else if (val && typeof val === 'object') {
-          actualUserId = val.uid || val.userId || val.id || actualUserId;
-        }
-      } else {
-        const usernameRefAt = db.ref(`usernames/${userId}`);
-        const usernameSnapAt = await usernameRefAt.once('value');
-        if (usernameSnapAt.exists()) {
-          const val = usernameSnapAt.val();
+      for (const path of possiblePaths) {
+        const snap = await db.ref(path).once('value');
+        if (snap.exists()) {
+          const val = snap.val();
           if (typeof val === 'string') {
             actualUserId = val;
+            break;
           } else if (val && typeof val === 'object') {
-            actualUserId = val.uid || val.userId || val.id || actualUserId;
+            actualUserId = val.uid || val.userId || val.id || val.user_id || actualUserId;
+            break;
           }
         }
       }
 
-      console.log('المعرف الفعلي (Target UID):', actualUserId);
+      console.log('المعرف الفعلي المستهدف (Target UID):', actualUserId);
 
       const userRef = db.ref(`users/${actualUserId}`);
 
