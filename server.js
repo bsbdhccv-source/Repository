@@ -81,10 +81,16 @@ app.post('/webhook', async (req, res) => {
       const db = admin.database();
       let actualUserId = userId;
       
-      // تنظيف الاسم من الرمز @ إن وجد للبحث في جدول usernames
       const cleanUsername = userId.startsWith('@') ? userId.replace('@', '') : userId;
 
-      // البحث في جدول usernames لمعرفة الـ UID الحقيقي
+      // طباعة محتويات جدول usernames بالكامل للتشخيص في السجلات
+      try {
+        const usernamesSnap = await db.ref('usernames').once('value');
+        console.log('محتويات جدول usernames في قاعدة البيانات:', usernamesSnap.val());
+      } catch (err) {
+        console.log('خطأ أثناء قراءة جدول usernames:', err.message);
+      }
+
       const usernameRef = db.ref(`usernames/${cleanUsername}`);
       const usernameSnap = await usernameRef.once('value');
 
@@ -96,7 +102,6 @@ app.post('/webhook', async (req, res) => {
           actualUserId = val.uid || val.userId || val.id || actualUserId;
         }
       } else {
-        // تجربة البحث مع الرمز @ مباشرة في حال كان مخزناً هكذا
         const usernameRefAt = db.ref(`usernames/${userId}`);
         const usernameSnapAt = await usernameRefAt.once('value');
         if (usernameSnapAt.exists()) {
