@@ -59,39 +59,37 @@ app.post('/webhook', async (req, res) => {
       }
 
       const db = admin.database();
-      let actualUserId = null;
       const cleanUsername = userId.startsWith('@') ? userId.replace('@', '') : userId;
 
-      // 1. البحث عن الـ UID الفعلي في الجداول
-      const possiblePaths = [
+      // 1. البحث عن الـ UID الفعلي للعبة
+      let gameUid = null;
+      const possibleUsernamesPaths = [
         `usernames/${cleanUsername}`,
-        `usernames/u_${cleanUsername}`,
-        `userProgress/${cleanUsername}`,
-        `userProgress/u_${cleanUsername}`,
-        `users/${cleanUsername}`
+        `usernames/u_${cleanUsername}`
       ];
 
-      for (const path of possiblePaths) {
+      for (const path of possibleUsernamesPaths) {
         const snap = await db.ref(path).once('value');
         if (snap.exists()) {
           const val = snap.val();
           if (typeof val === 'string') {
-            actualUserId = val;
+            gameUid = val;
             break;
           } else if (val && typeof val === 'object') {
-            actualUserId = val.uid || val.userId || val.id || val.user_id || actualUserId;
+            gameUid = val.uid || val.userId || val.id || val.user_id || gameUid;
             break;
           }
         }
       }
 
-      if (!actualUserId) {
-        actualUserId = userId;
+      if (!gameUid) {
+        gameUid = userId;
       }
 
-      console.log('المعرف المستهدف (Target ID):', actualUserId);
+      console.log('معرف اللعبة (Game UID):', gameUid);
+      console.log('اسم مستخدم تطبيق اللغات (LangApp Username):', cleanUsername);
 
-      // دالة لتحديث النقاط والعملات والرصيد لمرة واحدة
+      // دالة لتحديث النقاط لمرة واحدة بدقة
       const updatePointsTransaction = (currentData) => {
         if (currentData === null) {
           return { 
@@ -109,45 +107,6 @@ app.post('/webhook', async (req, res) => {
         }
       };
 
-      // 2. جمع المسارات الفريدة بدقة لتجنب التكرار (منع الشحن مرتين)
-      const targetPaths = new Set([
-        `users/${actualUserId}`,
-        `userProgress/${actualUserId}`,
-        `accounts/${actualUserId}`,
-        `users/${cleanUsername}`,
-        `userProgress/${cleanUsername}`
-      ]);
-
-      // 3. الماسح الذكي المكتشف للمسارات الفعلية
-      try {
-        const rootSnap = await db.ref('/').once('value');
-        const rootVal = rootSnap.val();
-        
-        if (rootVal && typeof rootVal === 'object') {
-          for (const rootKey of Object.keys(rootVal)) {
-            const rootChild = rootVal[rootKey];
-            if (rootChild && typeof rootChild === 'object') {
-              for (const subKey of Object.keys(rootChild)) {
-                const subVal = rootChild[subKey];
-                if (
-                  subKey.toLowerCase().includes(cleanUsername.toLowerCase()) || 
-                  subKey.toLowerCase().includes('fatima') ||
-                  (subVal && typeof subVal === 'object' && (
-                    subVal.username === cleanUsername || 
-                    subVal.name === cleanUsername || 
-                    subVal.userName === cleanUsername
-                  ))
-                ) {
-                  targetPaths.add(`${rootKey}/${subKey}`);
-                }
-              }
-            }
-          }
-        }
-      } catch (scanErr) {
-        console.log('خطأ في الماسح الذكي:', scanErr.message);
-      }
-
       const notifData = {
         title: 'تم شحن النقاط بنجاح 🎉',
         body: `تم إضافة ${pointsToAdd} نقطة إلى حسابك بنجاح.`,
@@ -155,28 +114,33 @@ app.post('/webhook', async (req, res) => {
         orderId: event.data.id || 'N/A'
       };
 
-      let notificationSent = false;
+      // 2. تحديد المسارات الأساسية بدقة تامة (اللعبة + تطبيق اللغات TEFLSY) بدون أي تكرار
+      const targetPaths = [
+        `users/${gameUid}`,
+        `userProgress/${gameUid}`,
+        `userProgress/${cleanUsername}`,
+        `userProgress/u_${cleanUsername}`,
+        `accounts/${cleanUsername}`,
+        `users/${cleanUsername}`
+      ];
 
-      // 4. تنفيذ التحديث (مرة واحدة لكل مسار فريد) وإرسال الإشعار بدقة
-      for (const p of targetPaths) {
+      const uniquePaths = [...new Set(targetPaths)];
+
+      // 3. تنفيذ الشحن مرة واحدة وإرسال الإشعار لكل من التطبيق واللعبة
+      for (const p of uniquePaths) {
         try {
           const ref = db.ref(p);
-          // شحن النقاط
+          // شحن النقاط مرة واحدة فقط للمسار
           await ref.transaction(updatePointsTransaction);
-          console.log(`✅ تم شحن النقاط بنجاح في المسار: ${p}`);
-
-          // إرسال الإشعار مرة واحدة فقط لأول مسار نشط يتم شحنه بنجاح لضمان ظهوره في قسم الإشعارات
-          if (!notificationSent) {
-            await ref.child('notifications').push().set(notifData);
-            console.log(`🔔 تم إرسال الإشعار بنجاح في المسار: ${p}/notifications`);
-            notificationSent = true;
-          }
+          // إرسال الإشعار لكل مسار نشط لضمان وصوله إلى قسم الإشعارات في التطبيق واللعبة
+          await ref.child('notifications').push().set(notifData);
+          console.log(`✅ تم شحن النقاط وإرسال الإشعار بنجاح في المسار: ${p}`);
         } catch (err) {
           console.log(`⚠️ تخطي المسار ${p}: ${err.message}`);
         }
       }
 
-      console.log('--- تمت معالجة الطلب بنجاح تام وبدون تكرار ---');
+      console.log('--- تمت معالجة الشحن والإشعارات بنجاح تام وبدون تكرار ---');
     }
 
     res.status(200).send({ success: true });
