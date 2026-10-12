@@ -32,10 +32,27 @@ app.get('/', (req, res) => {
   res.send('Webhook Server is live! 🚀');
 });
 
+// سجل لمنع تكرار معالجة نفس الطلب في حال أرسلته المنصة مرتين
+const processedEvents = new Set();
+
 app.post('/webhook', async (req, res) => {
   try {
     console.log('--- استلام Webhook جديد من Lemon Squeezy ---');
     const event = req.body;
+    const eventId = event && event.data ? event.data.id : null;
+
+    // منع التكرار إذا تم إرسال نفس الحدث مرتين
+    if (eventId && processedEvents.has(eventId)) {
+      console.log('⚠️ تم تجاهل طلب مكرر لنفس المعاملة (Event ID):', eventId);
+      return res.status(200).send({ success: true, duplicated: true });
+    }
+
+    if (eventId) {
+      processedEvents.add(eventId);
+      // مسح المعرف من الذاكرة بعد ساعة لتفريغ المساحة
+      setTimeout(() => processedEvents.delete(eventId), 3600000);
+    }
+
     const eventName = event && event.meta ? event.meta.event_name : null;
 
     if (eventName === 'order_created') {
@@ -62,7 +79,7 @@ app.post('/webhook', async (req, res) => {
       let actualUserId = null;
       const cleanUsername = userId.startsWith('@') ? userId.replace('@', '') : userId;
 
-      // 1. البحث التقليدي عن الـ UID للعبة
+      // البحث الذكي عن الـ UID الحقيقي (للعبة)
       const possiblePaths = [
         `usernames/${cleanUsername}`,
         `usernames/u_${cleanUsername}`,
@@ -86,28 +103,13 @@ app.post('/webhook', async (req, res) => {
       }
 
       if (!actualUserId) {
-        const usersSnap = await db.ref('users').once('value');
-        if (usersSnap.exists()) {
-          usersSnap.forEach((childSnap) => {
-            const userData = childSnap.val();
-            const key = childSnap.key;
-            if (userData && typeof userData === 'object') {
-              const uName = userData.username || userData.name || userData.userName || userData.displayName || '';
-              if (uName.toLowerCase() === cleanUsername.toLowerCase() || uName.toLowerCase() === userId.toLowerCase()) {
-                actualUserId = key;
-              }
-            }
-          });
-        }
-      }
-
-      if (!actualUserId) {
         actualUserId = userId;
       }
 
-      console.log('المعرف المستهدف للعبة (Target UID):', actualUserId);
+      console.log('معرف اللعبة (Game UID):', actualUserId);
+      console.log('اسم مستخدم التطبيق (TEFLSY Username):', cleanUsername);
 
-      // دالة لتحديث النقاط والعملات والرصيد
+      // دالة تحديث النقاط لمرة واحدة بدقة
       const updatePointsTransaction = (currentData) => {
         if (currentData === null) {
           return { 
@@ -127,68 +129,32 @@ app.post('/webhook', async (req, res) => {
 
       const notifData = {
         title: 'تم شحن النقاط بنجاح 🎉',
-        body: `تم إضافة ${pointsToAdd} نقطة إلى حسابك بنجاح.`,
+        body: `تم إضافة ${pointsToAdd} نقطة إلى حسابك بنجاح في تطبيق اللغات.`,
         timestamp: Date.now(),
-        orderId: event.data.id || 'N/A'
+        orderId: eventId || 'N/A'
       };
 
-      // 2. شحن اللعبة بشكل أساسي
-      const gamePaths = [
-        `users/${actualUserId}`,
-        `userProgress/${actualUserId}`
-      ];
-      for (const p of gamePaths) {
+      // تحديد المسارات بدقة تامة وبدون تكرار باستخدام Set
+      const targetPaths = new Set([
+        `userProgress/${cleanUsername}`,
+        `users/${cleanUsername}`,
+        `userProgress/${actualUserId}`,
+        `users/${actualUserId}`
+      ]);
+
+      // تنفيذ الشحن مرة واحدة لكل مسار فريد وإرسال الإشعار ليظهر في التطبيق
+      for (const p of targetPaths) {
         try {
           const ref = db.ref(p);
           await ref.transaction(updatePointsTransaction);
           await ref.child('notifications').push().set(notifData);
-          console.log(`✅ تم شحن اللعبة بنجاح في: ${p}`);
-        } catch (err) {}
-      }
-
-      // 3. الماسح العميق للبحث عن تطبيق TEFLSY في جميع الجذور والبيانات
-      try {
-        console.log('🔍 بدء الفحص العميق لقاعدة البيانات للعثور على تطبيق TEFLSY...');
-        const rootSnap = await db.ref('/').once('value');
-        const rootVal = rootSnap.val();
-
-        if (rootVal && typeof rootVal === 'object') {
-          for (const rootKey of Object.keys(rootVal)) {
-            const rootChild = rootVal[rootKey];
-            if (rootChild && typeof rootChild === 'object') {
-              for (const subKey of Object.keys(rootChild)) {
-                const subVal = rootChild[subKey];
-                
-                // مطابقة ذكية تبحث عن اسم فاطمة أو رصيد 10 نقاط الخاص بالتطبيق
-                const isMatch = 
-                  subKey.toLowerCase().includes(cleanUsername.toLowerCase()) ||
-                  subKey.toLowerCase().includes('fatima') ||
-                  (subVal && typeof subVal === 'object' && (
-                    (subVal.username && subVal.username.toLowerCase().includes(cleanUsername.toLowerCase())) ||
-                    (subVal.name && subVal.name.toLowerCase().includes(cleanUsername.toLowerCase())) ||
-                    subVal.points === 10 ||
-                    subVal.coins === 10 ||
-                    subVal.score === 10
-                  ));
-
-                if (isMatch) {
-                  const foundPath = `${rootKey}/${subKey}`;
-                  console.log(`🎯 [تم العثور على مسار تطبيق TEFLSY بدقة!]: ${foundPath}`);
-                  
-                  const appRef = db.ref(foundPath);
-                  await appRef.transaction(updatePointsTransaction);
-                  await appRef.child('notifications').push().set(notifData);
-                  console.log(`✨ ✅ تمت إضافة النقاط وإرسال الإشعار لتطبيق TEFLSY بنجاح في المسار: ${foundPath}`);
-                }
-              }
-            }
-          }
+          console.log(`✅ تم شحن النقاط وإرسال الإشعار بنجاح في المسار: ${p}`);
+        } catch (err) {
+          console.log(`⚠️ تخطي المسار ${p}: ${err.message}`);
         }
-      } catch (scanErr) {
-        console.log('خطأ في الماسح العميق:', scanErr.message);
       }
 
-      console.log('--- تمت معالجة الطلب بنجاح تام ---');
+      console.log('--- تمت معالجة الشحن والإشعارات بنجاح تام وبدون أي تكرار ---');
     }
 
     res.status(200).send({ success: true });
