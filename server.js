@@ -1,3 +1,46 @@
+const express = require('express');
+const bodyParser = require('body-parser');
+const admin = require('firebase-admin');
+const fs = require('fs');
+
+const app = express();
+const PORT = process.env.PORT || 10000;
+
+// تهيئة Firebase Admin SDK مع دعم المسار السري في Render أو الملف المحلي
+let serviceAccount;
+try {
+  if (fs.existsSync('/etc/secrets/serviceAccount.json')) {
+    serviceAccount = require('/etc/secrets/serviceAccount.json');
+    console.log('تم تحميل ملف الاعتماد من مسار Secret Files في Render بنجاح.');
+  } else if (fs.existsSync('./serviceAccount.json')) {
+    serviceAccount = require('./serviceAccount.json');
+    console.log('تم تحميل ملف الاعتماد من المجلد المحلي بنجاح.');
+  } else {
+    console.error('تحذير: لم يتم العثور على ملف serviceAccount.json!');
+  }
+} catch (error) {
+  console.error('خطأ أثناء تحميل ملف الاعتماد:', error);
+}
+
+if (serviceAccount) {
+  admin.initializeApp({
+    credential: admin.credential.cert(serviceAccount),
+    databaseURL: process.env.FIREBASE_DATABASE_URL || 'https://x-o-x-abfe6-default-rtdb.firebaseio.com/'
+  });
+  console.log('تم تهيئة اتصال Firebase بنجاح تام 🚀');
+}
+
+app.use(bodyParser.json({
+  verify: (req, res, buf) => {
+    req.rawBody = buf;
+  }
+}));
+
+app.get('/', (req, res) => {
+  console.log("تمت زيارة الصفحة الرئيسية للسيرفر");
+  res.send('Teflsy Stripe & Lemon Squeezy Webhook Server is live! 🚀');
+});
+
 app.post('/webhook', async (req, res) => {
   try {
     console.log('--- تم استلام Webhook جديد من Lemon Squeezy ---');
@@ -74,4 +117,8 @@ app.post('/webhook', async (req, res) => {
     console.error('خطأ أثناء معالجة الـ Webhook:', error);
     res.status(500).send({ error: error.message });
   }
+});
+
+app.listen(PORT, () => {
+  console.log(`Server is running on port ${PORT}`);
 });
