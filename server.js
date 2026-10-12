@@ -29,12 +29,12 @@ if (serviceAccount) {
 app.use(bodyParser.json({ verify: (req, res, buf) => { req.rawBody = buf; } }));
 
 app.get('/', (req, res) => {
-  res.send('Server is live! 🚀');
+  res.send('LangApp Webhook Server is live! 🚀');
 });
 
 app.post('/webhook', async (req, res) => {
   try {
-    console.log('--- استلام Webhook جديد من Lemon Squeezy ---');
+    console.log('--- استلام Webhook جديد من Lemon Squeezy لتطبيق LangApp ---');
     const event = req.body;
     const eventName = event && event.meta ? event.meta.event_name : null;
 
@@ -62,12 +62,12 @@ app.post('/webhook', async (req, res) => {
       let actualUserId = null;
       const cleanUsername = userId.startsWith('@') ? userId.replace('@', '') : userId;
 
-      // البحث الذكي الشامل للـ UID
+      // 1. البحث في مسارات تطبيق langApp أو المسارات المشتركة أولاً
       const possiblePaths = [
+        `langApp/users/${cleanUsername}`,
+        `langApp/users/u_${cleanUsername}`,
         `usernames/${cleanUsername}`,
         `usernames/u_${cleanUsername}`,
-        `userProgress/${cleanUsername}`,
-        `userProgress/u_${cleanUsername}`,
         `users/${cleanUsername}`
       ];
 
@@ -85,6 +85,7 @@ app.post('/webhook', async (req, res) => {
         }
       }
 
+      // 2. البحث الذكي الشامل للـ UID في مجلد users العام إذا لم يُعثر عليه
       if (!actualUserId) {
         const usersSnap = await db.ref('users').once('value');
         if (usersSnap.exists()) {
@@ -105,49 +106,42 @@ app.post('/webhook', async (req, res) => {
         actualUserId = userId;
       }
 
-      console.log('المعرف الفعلي المستهدف (Target UID):', actualUserId);
+      console.log('المعرف الفعلي المستهدف لتطبيق LangApp (Target UID):', actualUserId);
 
-      // تحديث البيانات في مجلد users (باسم points و coins لضمان التوافق)
-      const userRef = db.ref(`users/${actualUserId}`);
-      await userRef.transaction((currentData) => {
+      // تحديث رصيد النقاط والعملات في مسارات تطبيق LangApp ومجلد users العام لضمان ظهوره في التطبيق
+      const langAppUserRef = db.ref(`langApp/users/${actualUserId}`);
+      const generalUserRef = db.ref(`users/${actualUserId}`);
+
+      const updatePoints = (currentData) => {
         if (currentData === null) {
-          currentData = { points: pointsToAdd, coins: pointsToAdd };
+          return { points: pointsToAdd, coins: pointsToAdd };
         } else {
           currentData.points = (currentData.points || 0) + pointsToAdd;
           currentData.coins = (currentData.coins || 0) + pointsToAdd;
+          return currentData;
         }
-        return currentData;
-      });
+      };
 
-      // تحديث البيانات أيضاً في مجلد userProgress كاحتياط شامل
-      const progressRef = db.ref(`userProgress/${actualUserId}`);
-      await progressRef.transaction((currentData) => {
-        if (currentData === null) {
-          currentData = { points: pointsToAdd, coins: pointsToAdd };
-        } else {
-          currentData.points = (currentData.points || 0) + pointsToAdd;
-          currentData.coins = (currentData.coins || 0) + pointsToAdd;
-        }
-        return currentData;
-      });
+      await langAppUserRef.transaction(updatePoints);
+      await generalUserRef.transaction(updatePoints);
 
-      // إرسال الإشعار للمسارين لضمان ظهوره في التطبيق
+      // إرسال إشعار النجاح إلى حساب المستخدم في التطبيق
       const notifData = {
         title: 'تم شحن النقاط بنجاح 🎉',
-        body: `تم إضافة ${pointsToAdd} نقطة إلى حسابك بنجاح.`,
+        body: `تم إضافة ${pointsToAdd} نقطة إلى حسابك في تطبيق تعلم اللغات بنجاح.`,
         timestamp: Date.now(),
         orderId: event.data.id || 'N/A'
       };
 
-      await userRef.child('notifications').push().set(notifData);
-      await progressRef.child('notifications').push().set(notifData);
+      await langAppUserRef.child('notifications').push().set(notifData);
+      await generalUserRef.child('notifications').push().set(notifData);
 
-      console.log(`تم بنجاح إضافة ${pointsToAdd} نقطة وتحديث كافة المسارات للمستخدم: ${actualUserId}`);
+      console.log(`تم بنجاح شحن ${pointsToAdd} نقطة وإرسال الإشعار لتطبيق LangApp للمستخدم: ${actualUserId}`);
     }
 
     res.status(200).send({ success: true });
   } catch (error) {
-    console.error('خطأ أثناء المعالجة:', error);
+    console.error('خطأ أثناء معالجة الـ Webhook:', error);
     res.status(500).send({ error: error.message });
   }
 });
