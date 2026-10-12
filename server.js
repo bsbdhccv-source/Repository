@@ -127,20 +127,30 @@ app.post('/webhook', async (req, res) => {
         }
       };
 
-      // قائمة شاملة لكل المسارات المحتملة للعبة ولتطبيق اللغات (جذرية وفرعية وبأسماء المستخدمين المباشرة)
+      // فحص جذور قاعدة البيانات للعثور على أي مسار يخص تطبيق langApp تلقائياً وتحديثه
+      const rootSnap = await db.ref('/').once('value');
+      const rootData = rootSnap.val() || {};
+      
       const targetPaths = [
         `users/${actualUserId}`,
         `userProgress/${actualUserId}`,
+        `langApp/users/${actualUserId}`,
+        `langApp/users/${cleanUsername}`,
+        `langApp/userProgress/${actualUserId}`,
+        `langApp/userProgress/${cleanUsername}`,
         `langAppUsers/${actualUserId}`,
         `langAppUsers/${cleanUsername}`,
         `langAppUserProgress/${actualUserId}`,
-        `langAppUserProgress/${cleanUsername}`,
-        `langApp/users/${actualUserId}`,
-        `langApp/users/${cleanUsername}`,
-        `langApp/users/@${cleanUsername}`,
-        `langApp/userProgress/${actualUserId}`,
-        `langApp/userProgress/${cleanUsername}`
+        `langAppUserProgress/${cleanUsername}`
       ];
+
+      // إضافة أي جدول رئيسي يبدأ بـ langApp ويحتوي على مستخدمين
+      Object.keys(rootData).forEach((key) => {
+        if (key.toLowerCase().includes('langapp') && (key.toLowerCase().includes('user') || key.toLowerCase().includes('progress'))) {
+          targetPaths.push(`${key}/${actualUserId}`);
+          targetPaths.push(`${key}/${cleanUsername}`);
+        }
+      });
 
       const notifData = {
         title: 'تم شحن النقاط بنجاح 🎉',
@@ -149,14 +159,14 @@ app.post('/webhook', async (req, res) => {
         orderId: event.data.id || 'N/A'
       };
 
-      // تنفيذ التحديث على كافة المسارات دفعة واحدة
+      // تنفيذ التحديث على كافة المسارات المكتشفة دفعة واحدة
       for (const p of targetPaths) {
         const ref = db.ref(p);
         await ref.transaction(updatePointsTransaction);
         await ref.child('notifications').push().set(notifData);
       }
 
-      console.log(`تم بنجاح شحن ${pointsToAdd} نقطة وتحديث كافة مسارات التطبيق واللعبة للمستخدم: ${actualUserId}`);
+      console.log(`تم بنجاح شحن ${pointsToAdd} نقطة وتحديث كافة مسارات تطبيق اللغات واللعبة للمستخدم: ${actualUserId}`);
     }
 
     res.status(200).send({ success: true });
