@@ -62,7 +62,7 @@ app.post('/webhook', async (req, res) => {
       let actualUserId = null;
       const cleanUsername = userId.startsWith('@') ? userId.replace('@', '') : userId;
 
-      // 1. البحث في المسارات المباشرة المحتملة
+      // البحث الذكي الشامل للـ UID
       const possiblePaths = [
         `usernames/${cleanUsername}`,
         `usernames/u_${cleanUsername}`,
@@ -85,7 +85,6 @@ app.post('/webhook', async (req, res) => {
         }
       }
 
-      // 2. البحث الذكي الشامل داخل مجلد users في حال لم يتم العثور عليه
       if (!actualUserId) {
         const usersSnap = await db.ref('users').once('value');
         if (usersSnap.exists()) {
@@ -102,49 +101,48 @@ app.post('/webhook', async (req, res) => {
         }
       }
 
-      // 3. البحث الشامل داخل userProgress إذا لم يتم العثور عليه بعد
-      if (!actualUserId) {
-        const progressSnap = await db.ref('userProgress').once('value');
-        if (progressSnap.exists()) {
-          progressSnap.forEach((childSnap) => {
-            const progData = childSnap.val();
-            const key = childSnap.key;
-            if (progData && typeof progData === 'object') {
-              const pName = progData.username || progData.name || progData.userName || '';
-              if (pName.toLowerCase() === cleanUsername.toLowerCase() || key.toLowerCase().includes(cleanUsername.toLowerCase())) {
-                actualUserId = progData.uid || progData.userId || key;
-              }
-            }
-          });
-        }
-      }
-
-      // إذا لم يُعثر على مطابقة مطلقة، نستخدم المعرف المُمرر كملجأ أخير
       if (!actualUserId) {
         actualUserId = userId;
       }
 
       console.log('المعرف الفعلي المستهدف (Target UID):', actualUserId);
 
+      // تحديث البيانات في مجلد users (باسم points و coins لضمان التوافق)
       const userRef = db.ref(`users/${actualUserId}`);
       await userRef.transaction((currentData) => {
         if (currentData === null) {
-          currentData = { points: pointsToAdd };
+          currentData = { points: pointsToAdd, coins: pointsToAdd };
         } else {
           currentData.points = (currentData.points || 0) + pointsToAdd;
+          currentData.coins = (currentData.coins || 0) + pointsToAdd;
         }
         return currentData;
       });
 
-      const notificationsRef = userRef.child('notifications').push();
-      await notificationsRef.set({
+      // تحديث البيانات أيضاً في مجلد userProgress كاحتياط شامل
+      const progressRef = db.ref(`userProgress/${actualUserId}`);
+      await progressRef.transaction((currentData) => {
+        if (currentData === null) {
+          currentData = { points: pointsToAdd, coins: pointsToAdd };
+        } else {
+          currentData.points = (currentData.points || 0) + pointsToAdd;
+          currentData.coins = (currentData.coins || 0) + pointsToAdd;
+        }
+        return currentData;
+      });
+
+      // إرسال الإشعار للمسارين لضمان ظهوره في التطبيق
+      const notifData = {
         title: 'تم شحن النقاط بنجاح 🎉',
         body: `تم إضافة ${pointsToAdd} نقطة إلى حسابك بنجاح.`,
         timestamp: Date.now(),
         orderId: event.data.id || 'N/A'
-      });
+      };
 
-      console.log(`تم بنجاح إضافة ${pointsToAdd} نقطة وإرسال الإشعار للمستخدم تحت الـ UID الصحيح: ${actualUserId}`);
+      await userRef.child('notifications').push().set(notifData);
+      await progressRef.child('notifications').push().set(notifData);
+
+      console.log(`تم بنجاح إضافة ${pointsToAdd} نقطة وتحديث كافة المسارات للمستخدم: ${actualUserId}`);
     }
 
     res.status(200).send({ success: true });
