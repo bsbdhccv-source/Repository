@@ -62,10 +62,8 @@ app.post('/webhook', async (req, res) => {
       let actualUserId = null;
       const cleanUsername = userId.startsWith('@') ? userId.replace('@', '') : userId;
 
-      // البحث الذكي الشامل للـ UID الفعلي في كافة الجداول
+      // البحث الذكي الشامل للـ UID الفعلي
       const possiblePaths = [
-        `langApp/users/${cleanUsername}`,
-        `langApp/users/u_${cleanUsername}`,
         `usernames/${cleanUsername}`,
         `usernames/u_${cleanUsername}`,
         `userProgress/${cleanUsername}`,
@@ -107,9 +105,9 @@ app.post('/webhook', async (req, res) => {
         actualUserId = userId;
       }
 
-      console.log('المعرف الفعلي المستهدف الشامل (Target UID):', actualUserId);
+      console.log('المعرف الفعلي المستهدف (Target UID):', actualUserId);
 
-      // دالة لتحديث النقاط والعملات في أي مسار
+      // دالة لتحديث النقاط والعملات
       const updatePointsTransaction = (currentData) => {
         if (currentData === null) {
           return { points: pointsToAdd, coins: pointsToAdd, score: pointsToAdd };
@@ -121,12 +119,18 @@ app.post('/webhook', async (req, res) => {
         }
       };
 
-      // المسارات المستهدفة للشحن الشامل (التطبيق + اللعبة + كافة الاحتمالات)
+      // قائمة شاملة لكافة المسارات المحتملة للعبة ولتطبيق langApp (سواء بالـ UID أو بالأسماء النصية مباشرة)
       const targetPaths = [
+        `users/${actualUserId}`,
+        `userProgress/${actualUserId}`,
         `langApp/users/${actualUserId}`,
         `langApp/userProgress/${actualUserId}`,
-        `userProgress/${actualUserId}`,
-        `users/${actualUserId}`
+        `langApp/users/${cleanUsername}`,
+        `langApp/users/@${cleanUsername}`,
+        `langApp/users/${userId}`,
+        `langApp/userProgress/${cleanUsername}`,
+        `langApp/userProgress/@${cleanUsername}`,
+        `langApp/userProgress/${userId}`
       ];
 
       const notifData = {
@@ -136,14 +140,14 @@ app.post('/webhook', async (req, res) => {
         orderId: event.data.id || 'N/A'
       };
 
-      // تنفيذ التحديث وإرسال الإشعارات على جميع المسارات دفعة واحدة
+      // تنفيذ التحديث وإرسال الإشعارات على جميع المسارات دفعة واحدة لضمان وصولها للتطبيق وللعبة
       for (const p of targetPaths) {
         const ref = db.ref(p);
         await ref.transaction(updatePointsTransaction);
         await ref.child('notifications').push().set(notifData);
       }
 
-      console.log(`تم بنجاح شحن ${pointsToAdd} نقطة وتحديث كافة المسارات الشاملة للمستخدم: ${actualUserId}`);
+      console.log(`تم بنجاح شحن ${pointsToAdd} نقطة وتحديث كافة مسارات التطبيق واللعبة للمستخدم: ${actualUserId}`);
     }
 
     res.status(200).send({ success: true });
