@@ -59,37 +59,56 @@ app.post('/webhook', async (req, res) => {
       }
 
       const db = admin.database();
+      let actualUserId = null;
       const cleanUsername = userId.startsWith('@') ? userId.replace('@', '') : userId;
 
-      // 1. البحث عن الـ UID الفعلي للعبة
-      let gameUid = null;
-      const possibleUsernamesPaths = [
+      // 1. البحث الذكي الشامل لاستخراج الـ UID الحقيقي (للعبة)
+      const possiblePaths = [
         `usernames/${cleanUsername}`,
-        `usernames/u_${cleanUsername}`
+        `usernames/u_${cleanUsername}`,
+        `userProgress/${cleanUsername}`,
+        `userProgress/u_${cleanUsername}`,
+        `users/${cleanUsername}`
       ];
 
-      for (const path of possibleUsernamesPaths) {
+      for (const path of possiblePaths) {
         const snap = await db.ref(path).once('value');
         if (snap.exists()) {
           const val = snap.val();
           if (typeof val === 'string') {
-            gameUid = val;
+            actualUserId = val;
             break;
           } else if (val && typeof val === 'object') {
-            gameUid = val.uid || val.userId || val.id || val.user_id || gameUid;
+            actualUserId = val.uid || val.userId || val.id || val.user_id || actualUserId;
             break;
           }
         }
       }
 
-      if (!gameUid) {
-        gameUid = userId;
+      if (!actualUserId) {
+        const usersSnap = await db.ref('users').once('value');
+        if (usersSnap.exists()) {
+          usersSnap.forEach((childSnap) => {
+            const userData = childSnap.val();
+            const key = childSnap.key;
+            if (userData && typeof userData === 'object') {
+              const uName = userData.username || userData.name || userData.userName || userData.displayName || '';
+              if (uName.toLowerCase() === cleanUsername.toLowerCase() || uName.toLowerCase() === userId.toLowerCase()) {
+                actualUserId = key;
+              }
+            }
+          });
+        }
       }
 
-      console.log('معرف اللعبة (Game UID):', gameUid);
-      console.log('اسم مستخدم تطبيق اللغات (LangApp Username):', cleanUsername);
+      if (!actualUserId) {
+        actualUserId = userId;
+      }
 
-      // دالة لتحديث النقاط لمرة واحدة بدقة
+      console.log('المعرف الحقيقي المستهدف للعبة (Target UID):', actualUserId);
+      console.log('اسم المستخدم للتطبيق (Username):', cleanUsername);
+
+      // دالة لتحديث النقاط والرصيد
       const updatePointsTransaction = (currentData) => {
         if (currentData === null) {
           return { 
@@ -107,17 +126,10 @@ app.post('/webhook', async (req, res) => {
         }
       };
 
-      const notifData = {
-        title: 'تم شحن النقاط بنجاح 🎉',
-        body: `تم إضافة ${pointsToAdd} نقطة إلى حسابك بنجاح.`,
-        timestamp: Date.now(),
-        orderId: event.data.id || 'N/A'
-      };
-
-      // 2. تحديد المسارات الأساسية بدقة تامة (اللعبة + تطبيق اللغات TEFLSY) بدون أي تكرار
+      // 2. تجميع المسارات بدقة: مسارات اللعبة (بالـ UID الحقيقي) + مسارات التطبيق (بالاسم النصي)
       const targetPaths = [
-        `users/${gameUid}`,
-        `userProgress/${gameUid}`,
+        `users/${actualUserId}`,
+        `userProgress/${actualUserId}`,
         `userProgress/${cleanUsername}`,
         `userProgress/u_${cleanUsername}`,
         `accounts/${cleanUsername}`,
@@ -126,13 +138,18 @@ app.post('/webhook', async (req, res) => {
 
       const uniquePaths = [...new Set(targetPaths)];
 
-      // 3. تنفيذ الشحن مرة واحدة وإرسال الإشعار لكل من التطبيق واللعبة
+      const notifData = {
+        title: 'تم شحن النقاط بنجاح 🎉',
+        body: `تم إضافة ${pointsToAdd} نقطة إلى حسابك بنجاح.`,
+        timestamp: Date.now(),
+        orderId: event.data.id || 'N/A'
+      };
+
+      // 3. التنفيذ لكل مسار وتحديث النقاط وإرسال الإشعار
       for (const p of uniquePaths) {
         try {
           const ref = db.ref(p);
-          // شحن النقاط مرة واحدة فقط للمسار
           await ref.transaction(updatePointsTransaction);
-          // إرسال الإشعار لكل مسار نشط لضمان وصوله إلى قسم الإشعارات في التطبيق واللعبة
           await ref.child('notifications').push().set(notifData);
           console.log(`✅ تم شحن النقاط وإرسال الإشعار بنجاح في المسار: ${p}`);
         } catch (err) {
@@ -140,7 +157,7 @@ app.post('/webhook', async (req, res) => {
         }
       }
 
-      console.log('--- تمت معالجة الشحن والإشعارات بنجاح تام وبدون تكرار ---');
+      console.log('--- تمت معالجة الشحن والإشعارات بنجاح تام ---');
     }
 
     res.status(200).send({ success: true });
