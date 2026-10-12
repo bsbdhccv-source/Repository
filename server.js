@@ -68,6 +68,8 @@ app.post('/webhook', async (req, res) => {
         `usernames/u_${cleanUsername}`,
         `userProgress/${cleanUsername}`,
         `userProgress/u_${cleanUsername}`,
+        `accounts/${cleanUsername}`,
+        `accounts/u_${cleanUsername}`,
         `users/${cleanUsername}`
       ];
 
@@ -107,50 +109,40 @@ app.post('/webhook', async (req, res) => {
 
       console.log('المعرف الفعلي المستهدف (Target UID):', actualUserId);
 
-      // دالة لتحديث النقاط والعملات بكافة الأسماء المحتملة
+      // دالة لتحديث النقاط والعملات والرصيد بمختلف مسميات الحقول في التطبيقات
       const updatePointsTransaction = (currentData) => {
         if (currentData === null) {
           return { 
             points: pointsToAdd, 
             coins: pointsToAdd, 
-            score: pointsToAdd, 
-            langAppPoints: pointsToAdd,
-            langAppCoins: pointsToAdd 
+            score: pointsToAdd,
+            balance: pointsToAdd,
+            gems: pointsToAdd
           };
         } else {
           currentData.points = (currentData.points || 0) + pointsToAdd;
           currentData.coins = (currentData.coins || 0) + pointsToAdd;
           currentData.score = (currentData.score || 0) + pointsToAdd;
-          currentData.langAppPoints = (currentData.langAppPoints || 0) + pointsToAdd;
-          currentData.langAppCoins = (currentData.langAppCoins || 0) + pointsToAdd;
+          currentData.balance = (currentData.balance || 0) + pointsToAdd;
+          currentData.gems = (currentData.gems || 0) + pointsToAdd;
           return currentData;
         }
       };
 
-      // فحص جذور قاعدة البيانات للعثور على أي مسار يخص تطبيق langApp تلقائياً وتحديثه
-      const rootSnap = await db.ref('/').once('value');
-      const rootData = rootSnap.val() || {};
-      
+      // قائمة شاملة لكافة المسارات المحتملة للتطبيق واللعبة (accounts, userProgress, users)
       const targetPaths = [
         `users/${actualUserId}`,
         `userProgress/${actualUserId}`,
+        `accounts/${actualUserId}`,
+        `accounts/${cleanUsername}`,
+        `accounts/u_${cleanUsername}`,
+        `userProgress/${cleanUsername}`,
+        `userProgress/u_${cleanUsername}`,
         `langApp/users/${actualUserId}`,
         `langApp/users/${cleanUsername}`,
         `langApp/userProgress/${actualUserId}`,
-        `langApp/userProgress/${cleanUsername}`,
-        `langAppUsers/${actualUserId}`,
-        `langAppUsers/${cleanUsername}`,
-        `langAppUserProgress/${actualUserId}`,
-        `langAppUserProgress/${cleanUsername}`
+        `langApp/userProgress/${cleanUsername}`
       ];
-
-      // إضافة أي جدول رئيسي يبدأ بـ langApp ويحتوي على مستخدمين
-      Object.keys(rootData).forEach((key) => {
-        if (key.toLowerCase().includes('langapp') && (key.toLowerCase().includes('user') || key.toLowerCase().includes('progress'))) {
-          targetPaths.push(`${key}/${actualUserId}`);
-          targetPaths.push(`${key}/${cleanUsername}`);
-        }
-      });
 
       const notifData = {
         title: 'تم شحن النقاط بنجاح 🎉',
@@ -159,14 +151,14 @@ app.post('/webhook', async (req, res) => {
         orderId: event.data.id || 'N/A'
       };
 
-      // تنفيذ التحديث على كافة المسارات المكتشفة دفعة واحدة
+      // تنفيذ التحديث على كافة المسارات دفعة واحدة
       for (const p of targetPaths) {
         const ref = db.ref(p);
         await ref.transaction(updatePointsTransaction);
         await ref.child('notifications').push().set(notifData);
       }
 
-      console.log(`تم بنجاح شحن ${pointsToAdd} نقطة وتحديث كافة مسارات تطبيق اللغات واللعبة للمستخدم: ${actualUserId}`);
+      console.log(`تم بنجاح شحن ${pointsToAdd} نقطة وتحديث كافة مسارات التطبيق واللعبة للمستخدم: ${actualUserId}`);
     }
 
     res.status(200).send({ success: true });
