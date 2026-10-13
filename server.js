@@ -29,137 +29,138 @@ if (serviceAccount) {
 app.use(bodyParser.json({ verify: (req, res, buf) => { req.rawBody = buf; } }));
 
 app.get('/', (req, res) => {
-  res.send('Webhook Server is live! 🚀');
+  res.send('LangApp TEFLSY Webhook Server is live! 🚀');
 });
-
-// سجل لمنع تكرار معالجة نفس الطلب في حال أرسلته المنصة مرتين
-const processedEvents = new Set();
 
 app.post('/webhook', async (req, res) => {
   try {
     console.log('--- استلام Webhook جديد من Lemon Squeezy ---');
     const event = req.body;
-    const eventId = event && event.data ? event.data.id : null;
-
-    // منع التكرار إذا تم إرسال نفس الحدث مرتين
-    if (eventId && processedEvents.has(eventId)) {
-      console.log('⚠️ تم تجاهل طلب مكرر لنفس المعاملة (Event ID):', eventId);
-      return res.status(200).send({ success: true, duplicated: true });
-    }
-
-    if (eventId) {
-      processedEvents.add(eventId);
-      // مسح المعرف من الذاكرة بعد ساعة لتفريغ المساحة
-      setTimeout(() => processedEvents.delete(eventId), 3600000);
-    }
-
     const eventName = event && event.meta ? event.meta.event_name : null;
 
     if (eventName === 'order_created') {
+      const orderId = event.data && event.data.id ? String(event.data.id) : null;
       const attributes = event.data && event.data.attributes ? event.data.attributes : {};
       const meta = event.meta || {};
       const customData = attributes.checkout_data && attributes.checkout_data.custom 
                           ? attributes.checkout_data.custom 
                           : (attributes.custom_data || meta.custom_data || {});
 
-      let userId = customData.user_id || meta.user_id || attributes.passthrough || null;
-      if (userId) {
-        try { userId = decodeURIComponent(userId); } catch (e) {}
+      let rawUserId = customData.user_id || meta.user_id || attributes.passthrough || null;
+      if (rawUserId) {
+        try { rawUserId = decodeURIComponent(rawUserId); } catch (e) {}
       }
 
-      console.log('المعرف المستخرج من الرابط:', userId);
-      if (!userId) return res.status(200).send({ warning: 'user_id missing' });
+      console.log('المعرف المستخرج من الرابط:', rawUserId);
+      console.log('معرف الطلب (Order ID):', orderId);
+
+      if (!rawUserId) return res.status(200).send({ warning: 'user_id missing' });
+
+      const db = admin.database();
+
+      // 1. فحص منع التكرار باستخدام المجلد الخاص بالمنصة في Firebase
+      if (orderId) {
+        const processedSnap = await db.ref(`langAppLemonProcessed/${orderId}`).once('value');
+        if (processedSnap.exists()) {
+          console.log(`⚠️ الطلب ${orderId} معالج سابقاً وموجود في langAppLemonProcessed! تم إلغاء التكرار.`);
+          return res.status(200).send({ success: true, message: 'Already processed' });
+        }
+      }
 
       let pointsToAdd = 90;
       if (customData.points) {
         pointsToAdd = parseInt(customData.points, 10) || 90;
       }
 
-      const db = admin.database();
-      let actualUserId = null;
-      const cleanUsername = userId.startsWith('@') ? userId.replace('@', '') : userId;
+      const cleanUsername = rawUserId.startsWith('@') ? rawUserId.replace('@', '') : rawUserId;
+      let userCode = cleanUsername;
 
-      // البحث الذكي عن الـ UID الحقيقي (للعبة)
-      const possiblePaths = [
-        `usernames/${cleanUsername}`,
-        `usernames/u_${cleanUsername}`,
-        `userProgress/${cleanUsername}`,
-        `userProgress/u_${cleanUsername}`,
-        `users/${cleanUsername}`
-      ];
-
-      for (const path of possiblePaths) {
-        const snap = await db.ref(path).once('value');
-        if (snap.exists()) {
-          const val = snap.val();
-          if (typeof val === 'string') {
-            actualUserId = val;
-            break;
-          } else if (val && typeof val === 'object') {
-            actualUserId = val.uid || val.userId || val.id || val.user_id || actualUserId;
-            break;
-          }
+      // 2. البحث عن الكود الحقيقي للمستخدم من جدول userNames
+      const userNameSnap = await db.ref(`userNames/${cleanUsername}`).once('value');
+      if (userNameSnap.exists()) {
+        const mappedCode = userNameSnap.val();
+        if (typeof mappedCode === 'string') {
+          userCode = mappedCode;
+        } else if (mappedCode && mappedCode.code) {
+          userCode = mappedCode.code;
         }
       }
 
-      if (!actualUserId) {
-        actualUserId = userId;
+      console.log('كود المستخدم في activationCodes:', userCode);
+
+      // 3. شحن النقاط وتحديث الحساب في activationCodes لتطبيق TEFLSY
+      const userRef = db.ref(`activationCodes/${userCode}`);
+      const userSnap = await userRef.once('value');
+
+      if (userSnap.exists()) {
+        // تحديث النقاط الرئيسية
+        await userRef.child('points').transaction((current) => (current || 0) + pointsToAdd);
+        
+        // تحديث نقاط الأسبوع
+        await userRef.child('weeklyPoints').transaction((current) => (current || 0) + pointsToAdd);
+
+        // إضافة سجل مصدر النقاط
+        await userRef.child('pointsSources/purchase').transaction((current) => (current || 0) + pointsToAdd);
+
+        // إضافة سجل في pointsLog
+        await userRef.child('pointsLog').push({
+          amount: pointsToAdd,
+          type: 'purchase_lemon_squeezy',
+          orderId: orderId || 'N/A',
+          timestamp: Date.now()
+        });
+
+        console.log(`✅ تم تحديث نقاط تطبيق TEFLSY للحساب ${userCode} بـ ${pointsToAdd} نقطة.`);
+      } else {
+        // إنشاء السجل إن لم يكن موجوداً
+        await userRef.child('points').set(pointsToAdd);
+        console.log(`✅ تم إنشاء الحساب وشحن ${pointsToAdd} نقطة في activationCodes/${userCode}`);
       }
 
-      console.log('معرف اللعبة (Game UID):', actualUserId);
-      console.log('اسم مستخدم التطبيق (TEFLSY Username):', cleanUsername);
-
-      // دالة تحديث النقاط لمرة واحدة بدقة
-      const updatePointsTransaction = (currentData) => {
-        if (currentData === null) {
-          return { 
-            points: pointsToAdd, 
-            coins: pointsToAdd, 
-            score: pointsToAdd,
-            balance: pointsToAdd 
-          };
-        } else {
-          currentData.points = (currentData.points || 0) + pointsToAdd;
-          currentData.coins = (currentData.coins || 0) + pointsToAdd;
-          currentData.score = (currentData.score || 0) + pointsToAdd;
-          currentData.balance = (currentData.balance || 0) + pointsToAdd;
-          return currentData;
-        }
-      };
-
+      // 4. إرسال الإشعار لتطبيق TEFLSY في langAppNotifications/{code}
       const notifData = {
         title: 'تم شحن النقاط بنجاح 🎉',
-        body: `تم إضافة ${pointsToAdd} نقطة إلى حسابك بنجاح في تطبيق اللغات.`,
+        message: `تم إضافة ${pointsToAdd} نقطة إلى حسابك بنجاح.`,
+        body: `تم إضافة ${pointsToAdd} نقطة إلى حسابك بنجاح.`,
+        points: pointsToAdd,
         timestamp: Date.now(),
-        orderId: eventId || 'N/A'
+        orderId: orderId || 'N/A',
+        read: false
       };
 
-      // تحديد المسارات بدقة تامة وبدون تكرار باستخدام Set
-      const targetPaths = new Set([
-        `userProgress/${cleanUsername}`,
-        `users/${cleanUsername}`,
-        `userProgress/${actualUserId}`,
-        `users/${actualUserId}`
-      ]);
+      await db.ref(`langAppNotifications/${userCode}`).push(notifData);
+      console.log(`🔔 تم إرسال الإشعار بنجاح إلى langAppNotifications/${userCode}`);
 
-      // تنفيذ الشحن مرة واحدة لكل مسار فريد وإرسال الإشعار ليظهر في التطبيق
-      for (const p of targetPaths) {
+      // 5. شحن حساب اللعبة أيضاً (تحديث users و userProgress للـ UID أو الاسم)
+      const gamePaths = [
+        `users/${userCode}`,
+        `userProgress/${userCode}`,
+        `users/${cleanUsername}`,
+        `userProgress/${cleanUsername}`
+      ];
+      for (const p of gamePaths) {
         try {
-          const ref = db.ref(p);
-          await ref.transaction(updatePointsTransaction);
-          await ref.child('notifications').push().set(notifData);
-          console.log(`✅ تم شحن النقاط وإرسال الإشعار بنجاح في المسار: ${p}`);
-        } catch (err) {
-          console.log(`⚠️ تخطي المسار ${p}: ${err.message}`);
-        }
+          await db.ref(p).child('points').transaction((c) => (c || 0) + pointsToAdd);
+          await db.ref(p).child('notifications').push(notifData);
+        } catch (e) {}
       }
 
-      console.log('--- تمت معالجة الشحن والإشعارات بنجاح تام وبدون أي تكرار ---');
+      // 6. تسجيل الطلب في langAppLemonProcessed لمنع التكرار نهائياً في المستقبل
+      if (orderId) {
+        await db.ref(`langAppLemonProcessed/${orderId}`).set({
+          userCode: userCode,
+          username: cleanUsername,
+          points: pointsToAdd,
+          processedAt: Date.now()
+        });
+      }
+
+      console.log('--- تمت معالجة العملية بالكامل بنجاح تام ---');
     }
 
     res.status(200).send({ success: true });
   } catch (error) {
-    console.error('خطأ رئيسي:', error);
+    console.error('خطأ رئيسي في معالجة الـ Webhook:', error);
     res.status(500).send({ error: error.message });
   }
 });
