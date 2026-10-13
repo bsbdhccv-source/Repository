@@ -29,7 +29,7 @@ if (serviceAccount) {
 app.use(bodyParser.json({ verify: (req, res, buf) => { req.rawBody = buf; } }));
 
 app.get('/', (req, res) => {
-  res.send('LangApp TEFLSY Webhook Server is live! 🚀');
+  res.send('TEFLSY Webhook Server is live! 🚀');
 });
 
 app.post('/webhook', async (req, res) => {
@@ -39,7 +39,7 @@ app.post('/webhook', async (req, res) => {
     const eventName = event && event.meta ? event.meta.event_name : null;
 
     if (eventName === 'order_created') {
-      const orderId = event.data && event.data.id ? String(event.data.id) : null;
+      const orderId = event.data && event.data.id ? String(event.data.id) : `order_${Date.now()}`;
       const attributes = event.data && event.data.attributes ? event.data.attributes : {};
       const meta = event.meta || {};
       const customData = attributes.checkout_data && attributes.checkout_data.custom 
@@ -51,116 +51,102 @@ app.post('/webhook', async (req, res) => {
         try { rawUserId = decodeURIComponent(rawUserId); } catch (e) {}
       }
 
-      console.log('المعرف المستخرج من الرابط:', rawUserId);
+      console.log('المعرف المستخرج من رابط الشراء:', rawUserId);
       console.log('معرف الطلب (Order ID):', orderId);
 
       if (!rawUserId) return res.status(200).send({ warning: 'user_id missing' });
-
-      const db = admin.database();
-
-      // 1. فحص منع التكرار باستخدام المجلد الخاص بالمنصة في Firebase
-      if (orderId) {
-        const processedSnap = await db.ref(`langAppLemonProcessed/${orderId}`).once('value');
-        if (processedSnap.exists()) {
-          console.log(`⚠️ الطلب ${orderId} معالج سابقاً وموجود في langAppLemonProcessed! تم إلغاء التكرار.`);
-          return res.status(200).send({ success: true, message: 'Already processed' });
-        }
-      }
 
       let pointsToAdd = 90;
       if (customData.points) {
         pointsToAdd = parseInt(customData.points, 10) || 90;
       }
 
+      const db = admin.database();
       const cleanUsername = rawUserId.startsWith('@') ? rawUserId.replace('@', '') : rawUserId;
-      let userCode = cleanUsername;
+      let targetCode = cleanUsername;
 
-      // 2. البحث عن الكود الحقيقي للمستخدم من جدول userNames
-      const userNameSnap = await db.ref(`userNames/${cleanUsername}`).once('value');
-      if (userNameSnap.exists()) {
-        const mappedCode = userNameSnap.val();
-        if (typeof mappedCode === 'string') {
-          userCode = mappedCode;
-        } else if (mappedCode && mappedCode.code) {
-          userCode = mappedCode.code;
+      // 1. البحث في جدول userNames أولاً للعثور على الكود المرتبط
+      try {
+        const userNameSnap = await db.ref(`userNames/${cleanUsername}`).once('value');
+        if (userNameSnap.exists()) {
+          const val = userNameSnap.val();
+          if (typeof val === 'string') targetCode = val;
+          else if (val && val.code) targetCode = val.code;
+          console.log(`تم العثور على الكود عبر userNames: ${targetCode}`);
+        }
+      } catch (e) {
+        console.log('ملاحظة: لم يتم العثور على مطابقة في userNames، سيتم استخدام الاسم مباشرة.');
+      }
+
+      // 2. التحقق من وجود الحساب في activationCodes أو بالاسم المباشر
+      let finalAccountCode = targetCode;
+      const directCheck = await db.ref(`activationCodes/${cleanUsername}`).once('value');
+      if (directCheck.exists()) {
+        finalAccountCode = cleanUsername;
+      } else {
+        const mappedCheck = await db.ref(`activationCodes/${targetCode}`).once('value');
+        if (!mappedCheck.exists()) {
+          // إذا لم يوجد، ننشئه بالاسم النظيف لضمان عدم ضياع الشحن
+          finalAccountCode = cleanUsername;
         }
       }
 
-      console.log('كود المستخدم في activationCodes:', userCode);
+      console.log('كود الحساب النهائي المستهدف في activationCodes:', finalAccountCode);
 
-      // 3. شحن النقاط وتحديث الحساب في activationCodes لتطبيق TEFLSY
-      const userRef = db.ref(`activationCodes/${userCode}`);
-      const userSnap = await userRef.once('value');
+      // 3. شحن النقاط وتحديث الهيكلية بدقة في activationCodes/{code}
+      const userRef = db.ref(`activationCodes/${finalAccountCode}`);
 
-      if (userSnap.exists()) {
-        // تحديث النقاط الرئيسية
-        await userRef.child('points').transaction((current) => (current || 0) + pointsToAdd);
-        
-        // تحديث نقاط الأسبوع
-        await userRef.child('weeklyPoints').transaction((current) => (current || 0) + pointsToAdd);
+      // تحديث رصيد النقاط الرئيسي
+      await userRef.child('points').transaction((current) => (current || 0) + pointsToAdd);
 
-        // إضافة سجل مصدر النقاط
-        await userRef.child('pointsSources/purchase').transaction((current) => (current || 0) + pointsToAdd);
+      // تحديث نقاط الصدارة الأسبوعية
+      await userRef.child('weeklyPoints').transaction((current) => (current || 0) + pointsToAdd);
 
-        // إضافة سجل في pointsLog
-        await userRef.child('pointsLog').push({
-          amount: pointsToAdd,
-          type: 'purchase_lemon_squeezy',
-          orderId: orderId || 'N/A',
-          timestamp: Date.now()
-        });
+      // تسجيل مصدر الشراء
+      await userRef.child('pointsSources/purchase').transaction((current) => (current || 0) + pointsToAdd);
 
-        console.log(`✅ تم تحديث نقاط تطبيق TEFLSY للحساب ${userCode} بـ ${pointsToAdd} نقطة.`);
-      } else {
-        // إنشاء السجل إن لم يكن موجوداً
-        await userRef.child('points').set(pointsToAdd);
-        console.log(`✅ تم إنشاء الحساب وشحن ${pointsToAdd} نقطة في activationCodes/${userCode}`);
-      }
+      // إضافة سجل إلى pointsLog
+      await userRef.child('pointsLog').push({
+        amount: pointsToAdd,
+        type: 'purchase_lemon_squeezy',
+        orderId: orderId,
+        timestamp: Date.now()
+      });
 
-      // 4. إرسال الإشعار لتطبيق TEFLSY في langAppNotifications/{code}
+      console.log(`✅ تم شحن ${pointsToAdd} نقطة بنجاح للحساب activationCodes/${finalAccountCode}`);
+
+      // 4. إرسال الإشعار الداخلي ليظهر في قسم الإشعارات داخل تطبيق TEFLSY
       const notifData = {
         title: 'تم شحن النقاط بنجاح 🎉',
-        message: `تم إضافة ${pointsToAdd} نقطة إلى حسابك بنجاح.`,
-        body: `تم إضافة ${pointsToAdd} نقطة إلى حسابك بنجاح.`,
+        message: `تم إضافة ${pointsToAdd} نقطة إلى رصيدك بنجاح عبر عملية الشراء.`,
+        body: `تم إضافة ${pointsToAdd} نقطة إلى رصيدك بنجاح عبر عملية الشراء.`,
         points: pointsToAdd,
         timestamp: Date.now(),
-        orderId: orderId || 'N/A',
+        orderId: orderId,
         read: false
       };
 
-      await db.ref(`langAppNotifications/${userCode}`).push(notifData);
-      console.log(`🔔 تم إرسال الإشعار بنجاح إلى langAppNotifications/${userCode}`);
+      // إرسال الإشعار إلى المسار المخصص للإشعارات الداخلية في التطبيق
+      await db.ref(`langAppNotifications/${finalAccountCode}`).push(notifData);
+      // إرسال نسخة داخل مسار الحساب احتياطياً لضمان قراءتها بأي طريقة برمجية يتبعها التطبيق
+      await userRef.child('notifications').push(notifData);
 
-      // 5. شحن حساب اللعبة أيضاً (تحديث users و userProgress للـ UID أو الاسم)
-      const gamePaths = [
-        `users/${userCode}`,
-        `userProgress/${userCode}`,
-        `users/${cleanUsername}`,
-        `userProgress/${cleanUsername}`
-      ];
-      for (const p of gamePaths) {
-        try {
-          await db.ref(p).child('points').transaction((c) => (c || 0) + pointsToAdd);
-          await db.ref(p).child('notifications').push(notifData);
-        } catch (e) {}
-      }
+      console.log(`🔔 تم إرسال الإشعار الداخلي بنجاح لحساب: ${finalAccountCode}`);
 
-      // 6. تسجيل الطلب في langAppLemonProcessed لمنع التكرار نهائياً في المستقبل
-      if (orderId) {
-        await db.ref(`langAppLemonProcessed/${orderId}`).set({
-          userCode: userCode,
-          username: cleanUsername,
-          points: pointsToAdd,
-          processedAt: Date.now()
-        });
-      }
+      // 5. حفظ الطلب في سجل المعالجة لمنع تكراره لاحقاً للطلبات الحقيقية
+      await db.ref(`langAppLemonProcessed/${orderId}`).set({
+        userCode: finalAccountCode,
+        username: cleanUsername,
+        points: pointsToAdd,
+        processedAt: Date.now()
+      });
 
-      console.log('--- تمت معالجة العملية بالكامل بنجاح تام ---');
+      console.log('--- تمت معالجة الشحن والإشعارات بنجاح تام ---');
     }
 
     res.status(200).send({ success: true });
   } catch (error) {
-    console.error('خطأ رئيسي في معالجة الـ Webhook:', error);
+    console.error('خطأ رئيسي أثناء معالجة الـ Webhook:', error);
     res.status(500).send({ error: error.message });
   }
 });
