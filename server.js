@@ -63,59 +63,27 @@ app.post('/webhook', async (req, res) => {
 
       const db = admin.database();
       const cleanUsername = rawUserId.startsWith('@') ? rawUserId.replace('@', '') : rawUserId;
-      let targetCode = cleanUsername;
+      const withAtUsername = `@${cleanUsername}`;
 
-      // 1. البحث في جدول userNames أولاً للعثور على الكود المرتبط
-      try {
-        const userNameSnap = await db.ref(`userNames/${cleanUsername}`).once('value');
-        if (userNameSnap.exists()) {
-          const val = userNameSnap.val();
-          if (typeof val === 'string') targetCode = val;
-          else if (val && val.code) targetCode = val.code;
-          console.log(`تم العثور على الكود عبر userNames: ${targetCode}`);
-        }
-      } catch (e) {
-        console.log('ملاحظة: لم يتم العثور على مطابقة في userNames، سيتم استخدام الاسم مباشرة.');
-      }
+      const targetCodes = new Set([cleanUsername, withAtUsername, rawUserId]);
 
-      // 2. التحقق من وجود الحساب في activationCodes أو بالاسم المباشر
-      let finalAccountCode = targetCode;
-      const directCheck = await db.ref(`activationCodes/${cleanUsername}`).once('value');
-      if (directCheck.exists()) {
-        finalAccountCode = cleanUsername;
-      } else {
-        const mappedCheck = await db.ref(`activationCodes/${targetCode}`).once('value');
-        if (!mappedCheck.exists()) {
-          // إذا لم يوجد، ننشئه بالاسم النظيف لضمان عدم ضياع الشحن
-          finalAccountCode = cleanUsername;
-        }
-      }
+      // 1. البحث في userNames بالصيغتين (مع @ وبدون @)
+      const lookupUserNames = async (uName) => {
+        try {
+          const snap = await db.ref(`userNames/${uName}`).once('value');
+          if (snap.exists()) {
+            const val = snap.val();
+            if (typeof val === 'string') targetCodes.add(val);
+            else if (val && val.code) targetCodes.add(val.code);
+          }
+        } catch (e) {}
+      };
 
-      console.log('كود الحساب النهائي المستهدف في activationCodes:', finalAccountCode);
+      await lookupUserNames(cleanUsername);
+      await lookupUserNames(withAtUsername);
 
-      // 3. شحن النقاط وتحديث الهيكلية بدقة في activationCodes/{code}
-      const userRef = db.ref(`activationCodes/${finalAccountCode}`);
+      console.log('قائمة جميع الأكواد المستهدفة للحساب:', Array.from(targetCodes));
 
-      // تحديث رصيد النقاط الرئيسي
-      await userRef.child('points').transaction((current) => (current || 0) + pointsToAdd);
-
-      // تحديث نقاط الصدارة الأسبوعية
-      await userRef.child('weeklyPoints').transaction((current) => (current || 0) + pointsToAdd);
-
-      // تسجيل مصدر الشراء
-      await userRef.child('pointsSources/purchase').transaction((current) => (current || 0) + pointsToAdd);
-
-      // إضافة سجل إلى pointsLog
-      await userRef.child('pointsLog').push({
-        amount: pointsToAdd,
-        type: 'purchase_lemon_squeezy',
-        orderId: orderId,
-        timestamp: Date.now()
-      });
-
-      console.log(`✅ تم شحن ${pointsToAdd} نقطة بنجاح للحساب activationCodes/${finalAccountCode}`);
-
-      // 4. إرسال الإشعار الداخلي ليظهر في قسم الإشعارات داخل تطبيق TEFLSY
       const notifData = {
         title: 'تم شحن النقاط بنجاح 🎉',
         message: `تم إضافة ${pointsToAdd} نقطة إلى رصيدك بنجاح عبر عملية الشراء.`,
@@ -126,16 +94,36 @@ app.post('/webhook', async (req, res) => {
         read: false
       };
 
-      // إرسال الإشعار إلى المسار المخصص للإشعارات الداخلية في التطبيق
-      await db.ref(`langAppNotifications/${finalAccountCode}`).push(notifData);
-      // إرسال نسخة داخل مسار الحساب احتياطياً لضمان قراءتها بأي طريقة برمجية يتبعها التطبيق
-      await userRef.child('notifications').push(notifData);
+      // 2. تحديث النقاط والإشعارات في activationCodes لكافة الصيغ الفريدة
+      for (const code of targetCodes) {
+        try {
+          const userRef = db.ref(`activationCodes/${code}`);
+          
+          // تحديث النقاط الرئيسية والأساسية
+          await userRef.child('points').transaction((current) => (current || 0) + pointsToAdd);
+          await userRef.child('weeklyPoints').transaction((current) => (current || 0) + pointsToAdd);
+          await userRef.child('pointsSources/purchase').transaction((current) => (current || 0) + pointsToAdd);
 
-      console.log(`🔔 تم إرسال الإشعار الداخلي بنجاح لحساب: ${finalAccountCode}`);
+          await userRef.child('pointsLog').push({
+            amount: pointsToAdd,
+            type: 'purchase_lemon_squeezy',
+            orderId: orderId,
+            timestamp: Date.now()
+          });
 
-      // 5. حفظ الطلب في سجل المعالجة لمنع تكراره لاحقاً للطلبات الحقيقية
+          // إرسال الإشعارات بكل الطرق الممكنة للتطبيق
+          await db.ref(`langAppNotifications/${code}`).push(notifData);
+          await userRef.child('notifications').push(notifData);
+
+          console.log(`✅ تم شحن النقاط وإرسال الإشعار بنجاح للكود: ${code}`);
+        } catch (err) {
+          console.log(`⚠️ خطأ عند الشحن للكود ${code}:`, err.message);
+        }
+      }
+
+      // 3. تسجيل المعاملة لمنع التكرار
       await db.ref(`langAppLemonProcessed/${orderId}`).set({
-        userCode: finalAccountCode,
+        userCodes: Array.from(targetCodes),
         username: cleanUsername,
         points: pointsToAdd,
         processedAt: Date.now()
